@@ -15,7 +15,7 @@ async function fetchRealtimeData(custom) {
   const [tempPart, rpmStr = ''] = raw.split('|');
 
   // 1) 星号：磁盘休眠 / Idle
-  const starMatch = /^\*\s*\((CPU|Disk|Idle)\)/i.exec(tempPart);
+  const starMatch = /^\*\s*\((CPU|Disk|Aux|Idle)\)/i.exec(tempPart);
   if (starMatch) {
     const origin = starMatch[1]; // CPU / Disk / Idle
     const rpm = /^\d+$/.test(rpmStr) ? parseInt(rpmStr, 10) : null;
@@ -24,7 +24,7 @@ async function fetchRealtimeData(custom) {
   }
 
   // 2) 正常数字温度
-  const numMatch = /(\d+)\s*\((CPU|Disk)\)/i.exec(tempPart);
+  const numMatch = /(\d+)\s*\((CPU|Disk|Aux)\)/i.exec(tempPart);
   if (!numMatch) return { noCache: true };
 
   const temp   = parseInt(numMatch[1], 10);
@@ -61,8 +61,12 @@ window.showFanChart = function (btn) {
   const cpuEnabled = getSelectVal('[name^="cpu_enable["]') === '1';
   const cpuLow = getNum('[name^="cpu_min_temp["]');
   const cpuHigh = getNum('[name^="cpu_max_temp["]');
+  const auxEnabled = getSelectVal('[name^="aux_enable["]') === '1';
+  const auxLow = getNum('[name^="aux_min_temp["]');
+  const auxHigh = getNum('[name^="aux_max_temp["]');
   const hasDiskChart = diskSelected && pwmMin !== null && pwmMax !== null;
   const hasCpuChart = cpuEnabled && cpuLow !== null && cpuHigh !== null;
+  const hasAuxChart = auxEnabled && auxLow !== null && auxHigh !== null;
 
   if ([pwmMin, pwmMax, tempLow, tempHigh].some(v => v === null)) {
     Swal.fire('⚠️ Missing input', 'Please fill in all Disk Temp and PWM values.', 'warning');
@@ -121,18 +125,37 @@ window.showFanChart = function (btn) {
     });
   }
 
+  if (auxEnabled && auxLow !== null && auxHigh !== null) {
+    const auxPoints = makeLinePoints(auxLow, pwmMin, auxHigh, pwmMax);
+    const auxRadius = makePointRadiusArray(auxPoints.length);
+
+    datasets.push({
+    label: 'Aux Temp → PWM (%)',
+    data: auxPoints,
+    borderColor: '#0f9d58',
+    backgroundColor: 'rgba(15,157,88,0.1)',
+    borderWidth: 2,
+    pointRadius: auxRadius,
+    pointHoverRadius: 6,
+    fill: false,
+    tension: 0.4
+    });
+  }
+
   // 控制权注解说明文字
+  const activeSources = [];
+  if (diskSelected) activeSources.push('Disk');
+  if (cpuEnabled) activeSources.push('CPU');
+  if (auxEnabled) activeSources.push('Aux');
   let footerNote = '';
 
-  if (!cpuEnabled && !diskSelected) {
+  if (activeSources.length === 0) {
     footerNote = '⚠️ No rules defined — fan will not be controlled';
-    } else if (cpuEnabled && !diskSelected) {
-    footerNote = '💡 No disk selected — only CPU rule applies';
-    } else if (!cpuEnabled && diskSelected) {
-    footerNote = '💡 CPU control is disabled — only Disk rule applies';
-    } else {
-    footerNote = '💡 CPU and Disk rules are active — Fan PWM = max(Disk, CPU)';
-    }
+  } else if (activeSources.length === 1) {
+    footerNote = `💡 Only ${activeSources[0]} rule applies`;
+  } else {
+    footerNote = `💡 ${activeSources.join(' and ')} rules are active — Fan PWM = max(${activeSources.join(', ')})`;
+  }
     
   Swal.fire({
     title: `📈 ${name}`,
@@ -150,12 +173,14 @@ window.showFanChart = function (btn) {
     // 1) 只取一次的快照（避免 5s 刷新时 DOM 状态抖动）
     const customName = custom; // 供后端取 /var 的 key
     const snapCpuEnabled = getSelectVal('[name^="cpu_enable["]') === '1';
+    const snapAuxEnabled = getSelectVal('[name^="aux_enable["]') === '1';
     const disksElSnap = block.querySelector('[name^="disks["], [name^="include[]"]');
     const snapDiskSelected = !!(disksElSnap && disksElSnap.selectedOptions && disksElSnap.selectedOptions.length > 0);
 
     // 找到对应的 dataset（有可能没有）
     const dsCPU  = datasets.find(d => d.label && d.label.includes('CPU'));
     const dsDisk = datasets.find(d => d.label && d.label.includes('Disk'));
+    const dsAux  = datasets.find(d => d.label && d.label.includes('Aux'));
 
     // 顶部 Current 文本节点
     const liveNote = document.getElementById('fan-chart-live-note');
@@ -254,7 +279,7 @@ window.showFanChart = function (btn) {
               callbacks: {
                 title(items) { return `${items[0].parsed.x}°C`; },
                 label(ctx) {
-                  const label = ctx.dataset.label.includes('Disk') ? 'Disk Temp' : 'CPU Temp';
+                  const label = ctx.dataset.label.includes('Disk') ? 'Disk Temp' : ctx.dataset.label.includes('Aux') ? 'Aux Temp' : 'CPU Temp';
                   const percent = ctx.parsed.y;
                   const pwm = Math.round(percent * 2.55);
                   return `${label} → Fan Speed = ${percent.toFixed(0)}% (PWM ${pwm})`;
@@ -325,7 +350,7 @@ window.showFanChart = function (btn) {
           }
           vLine.style.display = hLine.style.display = dot.style.display = 'none';
         } else {
-          const ds = origin === 'CPU' ? dsCPU : dsDisk;
+          const ds = origin === 'CPU' ? dsCPU : origin === 'Aux' ? dsAux : dsDisk;
           percent = pickPercentNearest(ds, temp);
           if (percent != null) {
             const pwm = Math.round(percent * 2.55);
@@ -378,6 +403,8 @@ window.showFanChart = function (btn) {
           html += '<br><span style="color:#999;">(CPU was disabled, still active until Apply)</span>';
         } else if (origin === 'Disk' && !snapDiskSelected) {
           html += '<br><span style="color:#999;">(Disk was deselected, still active until Apply)</span>';
+        } else if (origin === 'Aux' && !snapAuxEnabled) {
+          html += '<br><span style="color:#999;">(Aux was disabled, still active until Apply)</span>';
         }
 
         liveNote.innerHTML = html;
