@@ -223,6 +223,7 @@ const auxDropdownChecklistOptions = {
   emptyText: '(None)',
   width: 300,
   explicitClose: '...close',
+  positionHow: 'relative',
   textFormatFunction: function (options) {
     const selected = options.filter(':selected');
     const count = selected.length;

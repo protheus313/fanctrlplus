@@ -242,7 +242,7 @@ function detect_storcli_temps(string $storcli_bin): array {
         $result[] = [
           'path'  => "storcli:c{$controller}:roc",
           'label' => "{$model} c{$controller} - ROC ({$temp}°C)",
-          'chip'  => $model,
+          'chip'  => 'RAID Controller',
           'idx'   => $controller * 10,
         ];
       }
@@ -293,7 +293,7 @@ function detect_nvidia_temps(string $nvidia_smi): array {
     $result[] = [
       'path'  => "nvidia:gpu{$idx}",
       'label' => "{$name} - GPU {$idx} ({$temp}°C)",
-      'chip'  => $name,
+      'chip'  => 'GPU',
       'idx'   => $idx,
     ];
   }
@@ -530,11 +530,15 @@ function detect_aux_sensors(): array {
         ?: ($a['idx'] <=> $b['idx']);
   });
 
-  $final = [];
+  // Group by chip name for optgroup display
+  $grouped = [];
   foreach ($result as $e) {
-    $final[$e['path']] = $e['label'];
+    $grouped[$e['chip']][] = [
+      'path'  => $e['path'],
+      'label' => $e['label'],
+    ];
   }
-  return $final;
+  return $grouped;
 }
 
   // 映射 /dev/nvmeXp1 → pool 名（通过 zpool list -v）

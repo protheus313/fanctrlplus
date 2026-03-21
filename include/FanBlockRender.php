@@ -323,8 +323,12 @@ function render_fan_block($cfg, $i, $pwms, $disks, $pwm_labels, $cpu_sensors, $a
           <td>
             <?php $aux_selected = array_filter(explode(',', $cfg['aux_sensor'] ?? '')); ?>
             <select class="aux-select aux-input fcp-w-300" name="aux_sensor[<?=$i?>][]" multiple <?=($cfg['aux_enable'] ?? '') != '1' ? 'disabled' : ''?>>
-              <?php foreach ($aux_sensors as $path => $label): ?>
-                <option value="<?=htmlspecialchars($path)?>" <?=in_array($path, $aux_selected) ? 'selected' : ''?>><?=htmlspecialchars($label)?></option>
+              <?php foreach ($aux_sensors as $group => $entries): ?>
+                <optgroup label="<?=htmlspecialchars($group)?>">
+                  <?php foreach ($entries as $sensor): ?>
+                    <option value="<?=htmlspecialchars($sensor['path'])?>" <?=in_array($sensor['path'], $aux_selected) ? 'selected' : ''?>><?=htmlspecialchars($sensor['label'])?></option>
+                  <?php endforeach; ?>
+                </optgroup>
               <?php endforeach; ?>
             </select>
           </td>
