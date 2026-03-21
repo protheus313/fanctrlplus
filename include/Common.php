@@ -235,8 +235,8 @@ function detect_storcli_temps(string $storcli_bin): array {
       continue;
     }
 
-    // ROC temperature(Degree Celsius) = 68
-    if (preg_match('/ROC temperature.*?=\s*(\d+)/i', $line, $m)) {
+    // ROC temperature(Degree Celsius) 68
+    if (preg_match('/ROC temperature.*\s(\d+)\s*$/i', $line, $m)) {
       $temp = (int)$m[1];
       if ($temp > 0) {
         $result[] = [

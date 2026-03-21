@@ -63,7 +63,7 @@ if [[ "${aux_enable:-0}" == "1" && -n "$aux_sensor" ]]; then
       if [[ -n "$storcli_bin" && "$sensor" =~ ^storcli:c([0-9]+):roc$ ]]; then
         sc_ctrl="${BASH_REMATCH[1]}"
         cur_temp=$("$storcli_bin" "/c${sc_ctrl}" show temperature 2>/dev/null \
-          | awk -F'=' '/ROC temperature/{gsub(/[^0-9]/,"",$2); print $2; exit}')
+          | awk '/ROC temperature/{print $NF; exit}')
         cur_temp=${cur_temp:-0}
       fi
     elif [[ "$sensor" == nvidia:* ]]; then
