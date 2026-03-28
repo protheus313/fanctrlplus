@@ -134,6 +134,7 @@ $pwms = list_pwm();
 $disks = list_valid_disks_by_id();
 $width = 300;
 $cpu_sensors = detect_cpu_sensors();
+$aux_sensors = detect_aux_sensors();
 
 // === 读取 FCP Airflow 开关 ===
 function fcp_airflow_enabled(string $cfg_dir): bool {
@@ -215,6 +216,23 @@ const dropdownChecklistOptions = {
       options.closest('td').find('.ui-dropdownchecklist-text').attr('title', tooltip);
     }, 10);
     return count === 0 ? '(None)' : `Selected ${count} Disk${count > 1 ? 's' : ''}`;
+  }
+};
+
+const auxDropdownChecklistOptions = {
+  emptyText: '(None)',
+  width: 300,
+  explicitClose: '...close',
+  textFormatFunction: function (options) {
+    const selected = options.filter(':selected');
+    const count = selected.length;
+    const tooltip = selected.map(function () {
+      return $(this).text();
+    }).get().join('\n') || '(None)';
+    setTimeout(() => {
+      options.closest('td').find('.ui-dropdownchecklist-text').attr('title', tooltip);
+    }, 10);
+    return count === 0 ? '(None)' : `Selected ${count} Sensor${count > 1 ? 's' : ''}`;
   }
 };
 
@@ -327,12 +345,14 @@ $(function() {
         if (hub)   hub.setAttribute('fill', hubColor);
 
         const cpuEnabled = block.find('select[name^="cpu_enable["]').val() === "1";
+        const auxEnabled = block.find('select[name^="aux_enable["]').val() === "1";
         const hasDisks = block.find('select[name^="disks["] option:selected').length > 0;
         const container = fanSvg.closest('.fan-svg-container');
         if (container) {
           const sources = [];
           if (cpuEnabled) sources.push("CPU");
           if (hasDisks) sources.push("Disk");
+          if (auxEnabled) sources.push("Aux");
 
           const sourceText = sources.length
             ? ` (based on ${sources.join(" and ")} temperature)`
@@ -440,6 +460,7 @@ $(function() {
       initOriginalForBlock($html);
 
       $html.find('.disk-select').dropdownchecklist(dropdownChecklistOptions);
+      $html.find('.aux-select').dropdownchecklist(auxDropdownChecklistOptions);
 
       updateAllFanStatus();
       ensureColumnDroppable();
@@ -458,12 +479,18 @@ $(function() {
           { selector: 'input[id^="high_temp_input_"]', unit: '°C', min: 1, max: 100 },
           { selector: 'input[id^="cpu_low_temp_input_"]', unit: '°C', min: 1, max: 95 },
           { selector: 'input[id^="cpu_high_temp_input_"]', unit: '°C', min: 1, max: 110 },
+          { selector: 'input[id^="aux_low_temp_input_"]', unit: '°C', min: 1, max: 110 },
+          { selector: 'input[id^="aux_high_temp_input_"]', unit: '°C', min: 1, max: 110 },
           { selector: 'input[id^="interval_input_"]', unit: ' min', min: 1, max: 60 }
         ]);
 
         $html.find('select[id^="cpu-enable-"]').each(function () {
           const index = this.id.replace('cpu-enable-', '');
           window.handleCpuEnableChange(this, index);
+        });
+        $html.find('select[id^="aux-enable-"]').each(function () {
+          const index = this.id.replace('aux-enable-', '');
+          window.handleAuxEnableChange(this, index);
         });
 
         bindFanSpeedEvents();
@@ -609,6 +636,8 @@ $(function() {
       { selector: 'input[id^="high_temp_input_"]', unit: '°C', min: 1, max: 100 },
       { selector: 'input[id^="cpu_low_temp_input_"]', unit: '°C', min: 1, max: 95 },
       { selector: 'input[id^="cpu_high_temp_input_"]', unit: '°C', min: 1, max: 110 },
+      { selector: 'input[id^="aux_low_temp_input_"]', unit: '°C', min: 1, max: 110 },
+      { selector: 'input[id^="aux_high_temp_input_"]', unit: '°C', min: 1, max: 110 },
       { selector: 'input[id^="interval_input_"]', unit: ' min', min: 1, max: 60 }
     ]);
     loadPWMOptions();
@@ -871,7 +900,11 @@ $(function() {
       cpu_enable: $block.find('select[name^="cpu_enable["]').val(),
       cpu_sensor: $block.find('select[name^="cpu_sensor["]').val(),
       cpu_min_temp: stripUnit($block.find('input[name^="cpu_min_temp["]').val()),
-      cpu_max_temp: stripUnit($block.find('input[name^="cpu_max_temp["]').val())
+      cpu_max_temp: stripUnit($block.find('input[name^="cpu_max_temp["]').val()),
+      aux_enable: $block.find('select[name^="aux_enable["]').val(),
+      aux_sensor: $block.find('select[name^="aux_sensor["]').val(),
+      aux_min_temp: stripUnit($block.find('input[name^="aux_min_temp["]').val()),
+      aux_max_temp: stripUnit($block.find('input[name^="aux_max_temp["]').val())
     };
     $block.data('original', original);
   }
@@ -896,7 +929,11 @@ $(function() {
         cpu_enable: $block.find('select[name^="cpu_enable["]').val(),
         cpu_sensor: $block.find('select[name^="cpu_sensor["]').val(),
         cpu_min_temp: stripUnit($block.find('input[name^="cpu_min_temp["]').val()),
-        cpu_max_temp: stripUnit($block.find('input[name^="cpu_max_temp["]').val())
+        cpu_max_temp: stripUnit($block.find('input[name^="cpu_max_temp["]').val()),
+        aux_enable: $block.find('select[name^="aux_enable["]').val(),
+        aux_sensor: $block.find('select[name^="aux_sensor["]').val(),
+        aux_min_temp: stripUnit($block.find('input[name^="aux_min_temp["]').val()),
+        aux_max_temp: stripUnit($block.find('input[name^="aux_max_temp["]').val())
       };
 
       if (JSON.stringify(original) !== JSON.stringify(current)) {
@@ -978,6 +1015,7 @@ $(function() {
   });
 
   $('.disk-select').dropdownchecklist(dropdownChecklistOptions);
+  $('.aux-select').dropdownchecklist(auxDropdownChecklistOptions);
 
   $('.fan-block').each(function () {
     initOriginalForBlock($(this));
@@ -1061,6 +1099,8 @@ $(function() {
       const idlePct = parseInt(stripUnit(block.find('input[name^="idle_percent["]').val()));
       const cpuLow = parseInt(stripUnit(block.find('input[name^="cpu_min_temp["]').val()));
       const cpuHigh = parseInt(stripUnit(block.find('input[name^="cpu_max_temp["]').val()));
+      const auxLow = parseInt(stripUnit(block.find('input[name^="aux_min_temp["]').val()));
+      const auxHigh = parseInt(stripUnit(block.find('input[name^="aux_max_temp["]').val()));
 
       if (!isNaN(lowTemp) && !isNaN(highTemp) && lowTemp >= highTemp) {
         alert(`Fan configuration "${name}": Disk Low Temp cannot exceed High Temp.`);
@@ -1070,6 +1110,12 @@ $(function() {
 
         if (!isNaN(cpuLow) && !isNaN(cpuHigh) && cpuLow >= cpuHigh) {
         alert(`Fan configuration "${name}": CPU Low Temp cannot exceed High Temp.`);
+        rangeValid = false;
+        return false;
+      }
+
+      if (!isNaN(auxLow) && !isNaN(auxHigh) && auxLow >= auxHigh) {
+        alert(`Fan configuration "${name}": Aux Low Temp cannot exceed High Temp.`);
         rangeValid = false;
         return false;
       }
@@ -1414,6 +1460,42 @@ $(function() {
     }
   };
 
+  window.handleAuxEnableChange = function(selectEl, index) {
+    const enabled = selectEl.value === "1";
+
+    const rows = document.querySelectorAll(`.aux-control-${index}`);
+    rows.forEach(row => {
+      row.querySelectorAll('.aux-input').forEach(el => {
+        el.disabled = !enabled;
+        el.classList.toggle('disabled', !enabled);
+      });
+    });
+
+    document.querySelectorAll(`.aux-control-${index} .aux-label`).forEach(label => {
+      label.classList.toggle('disabled', !enabled);
+    });
+
+    // Rebuild dropdownchecklist widget to reflect disabled state
+    const $block = $(selectEl).closest('.fan-block');
+    const $auxSelect = $block.find('.aux-select');
+    if ($auxSelect.length) {
+      $auxSelect.dropdownchecklist('destroy');
+      $auxSelect.dropdownchecklist(auxDropdownChecklistOptions);
+    }
+
+    if (enabled) {
+      const lowInput  = document.querySelector(`#aux_low_temp_input_${index}`);
+      const highInput = document.querySelector(`#aux_high_temp_input_${index}`);
+
+      if (lowInput && lowInput.value.trim() === '') {
+        lowInput.value = '40°C';
+      }
+      if (highInput && highInput.value.trim() === '') {
+        highInput.value = '70°C';
+      }
+    }
+  };
+
   // 初始化所有 block 的状态，并绑定 onchange
   window.addEventListener('load', function () {
     requestAnimationFrame(() => {
@@ -1425,6 +1507,14 @@ $(function() {
           window.handleCpuEnableChange(this, index);
         });
       });
+      document.querySelectorAll('select[id^="aux-enable-"]').forEach(select => {
+        const index = select.id.replace('aux-enable-', '');
+        window.handleAuxEnableChange(select, index);
+
+        select.addEventListener('change', function () {
+          window.handleAuxEnableChange(this, index);
+        });
+      });
     });
   });
   setTimeout(() => {
@@ -1432,6 +1522,13 @@ $(function() {
       const index = select.id.replace('cpu-enable-', '');
       const enabled = select.value === "1";
       document.querySelectorAll(`.cpu-control-${index} .cpu-label`).forEach(label => {
+        label.classList.toggle('disabled', !enabled);
+      });
+    });
+    document.querySelectorAll('select[id^="aux-enable-"]').forEach(select => {
+      const index = select.id.replace('aux-enable-', '');
+      const enabled = select.value === "1";
+      document.querySelectorAll(`.aux-control-${index} .aux-label`).forEach(label => {
         label.classList.toggle('disabled', !enabled);
       });
     });
@@ -1452,7 +1549,7 @@ $(function() {
           $cfg = parse_ini_file($path);
           $cfg['file'] = $file;
           $all_cfg[] = $cfg;
-          echo render_fan_block($cfg, $i++, $pwms, $disks, $pwm_labels, $cpu_sensors);
+          echo render_fan_block($cfg, $i++, $pwms, $disks, $pwm_labels, $cpu_sensors, $aux_sensors);
         }
       }
       ?>
@@ -1465,7 +1562,7 @@ $(function() {
           $cfg = parse_ini_file($path);
           $cfg['file'] = $file;
           $all_cfg[] = $cfg;
-          echo render_fan_block($cfg, $i++, $pwms, $disks, $pwm_labels, $cpu_sensors);
+          echo render_fan_block($cfg, $i++, $pwms, $disks, $pwm_labels, $cpu_sensors, $aux_sensors);
         }
       }
       ?>
@@ -1483,7 +1580,7 @@ $(function() {
       $cfg = parse_ini_file($path);
       $cfg['file'] = $basename;
       $all_cfg[] = $cfg;
-      $html = addslashes(render_fan_block($cfg, $i, $pwms, $disks, $pwm_labels, $cpu_sensors));
+      $html = addslashes(render_fan_block($cfg, $i, $pwms, $disks, $pwm_labels, $cpu_sensors, $aux_sensors));
       if ($count_left <= $count_right) {
         $target = '#fan-column-left';
         $count_left++;

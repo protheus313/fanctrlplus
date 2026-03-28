@@ -185,6 +185,122 @@ function list_pwm() {
   return $out;
 }
 
+// Find storcli binary (storcli64, storcli2, storcli) in common paths
+function find_storcli(): ?string {
+  $candidates = [
+    '/opt/MegaRAID/storcli/storcli64',
+    '/opt/MegaRAID/storcli/storcli',
+    '/usr/local/sbin/storcli64',
+    '/usr/local/sbin/storcli',
+    '/usr/local/bin/storcli64',
+    '/usr/local/bin/storcli',
+    '/usr/sbin/storcli64',
+    '/usr/sbin/storcli',
+    '/usr/bin/storcli64',
+    '/usr/bin/storcli',
+  ];
+  foreach ($candidates as $path) {
+    if (is_executable($path)) return $path;
+  }
+  // Fall back to PATH lookup
+  $which = trim(shell_exec("which storcli64 2>/dev/null") ?? '');
+  if ($which !== '' && is_executable($which)) return $which;
+  $which = trim(shell_exec("which storcli 2>/dev/null") ?? '');
+  if ($which !== '' && is_executable($which)) return $which;
+  return null;
+}
+
+// Detect LSI/MegaRAID controller temperatures via storcli
+// Returns array of ['path' => 'storcli:cX', 'label' => 'LSI RAID c0 - ROC (68°C)', 'chip' => ..., 'idx' => ...]
+function detect_storcli_temps(string $storcli_bin): array {
+  $result = [];
+
+  $output = shell_exec("$storcli_bin /call show temperature 2>/dev/null");
+  if (!$output) return $result;
+
+  $controller = 0;
+  $model = 'LSI RAID';
+
+  foreach (explode("\n", $output) as $line) {
+    $line = trim($line);
+
+    if (preg_match('/^Controller\s*=\s*(\d+)/i', $line, $m)) {
+      $controller = (int)$m[1];
+      continue;
+    }
+
+    // Product Name = SAS9341-8i
+    if (preg_match('/^Product Name\s*=\s*(.+)/i', $line, $m)) {
+      $model = trim($m[1]);
+      continue;
+    }
+
+    // ROC temperature(Degree Celsius) 68
+    if (preg_match('/ROC temperature.*\s(\d+)\s*$/i', $line, $m)) {
+      $temp = (int)$m[1];
+      if ($temp > 0) {
+        $result[] = [
+          'path'  => "storcli:c{$controller}:roc",
+          'label' => "{$model} c{$controller} - ROC ({$temp}°C)",
+          'chip'  => 'RAID Controller',
+          'idx'   => $controller * 10,
+        ];
+      }
+      continue;
+    }
+  }
+
+  return $result;
+}
+
+// Find nvidia-smi binary
+function find_nvidia_smi(): ?string {
+  $candidates = [
+    '/usr/bin/nvidia-smi',
+    '/usr/local/bin/nvidia-smi',
+    '/usr/lib/nvidia/bin/nvidia-smi',
+  ];
+  foreach ($candidates as $path) {
+    if (is_executable($path)) return $path;
+  }
+  $which = trim(shell_exec("which nvidia-smi 2>/dev/null") ?? '');
+  if ($which !== '' && is_executable($which)) return $which;
+  return null;
+}
+
+// Detect NVIDIA GPU temperatures via nvidia-smi
+// Returns array of ['path' => 'nvidia:gpu0', 'label' => 'NVIDIA GeForce RTX 3080 - GPU 0 (55°C)', ...]
+function detect_nvidia_temps(string $nvidia_smi): array {
+  $result = [];
+
+  // Query all GPUs: index, name, temperature
+  $output = shell_exec("$nvidia_smi --query-gpu=index,name,temperature.gpu --format=csv,noheader,nounits 2>/dev/null");
+  if (!$output) return $result;
+
+  foreach (explode("\n", trim($output)) as $line) {
+    $line = trim($line);
+    if ($line === '') continue;
+
+    $parts = array_map('trim', explode(',', $line));
+    if (count($parts) < 3) continue;
+
+    $idx  = (int)$parts[0];
+    $name = $parts[1];
+    $temp = (int)$parts[2];
+
+    if ($temp <= 0) continue;
+
+    $result[] = [
+      'path'  => "nvidia:gpu{$idx}",
+      'label' => "{$name} - GPU {$idx} ({$temp}°C)",
+      'chip'  => 'GPU',
+      'idx'   => $idx,
+    ];
+  }
+
+  return $result;
+}
+
 function list_valid_disks_by_id() {
   $seen = [];
   $groups = [];
@@ -306,6 +422,123 @@ function detect_cpu_sensors(): array {
     $final[$e['path']] = $e['label'];
   }
   return $final;
+}
+
+// Scan all hwmon sensors and return non-CPU, non-NVMe temperature sensors
+// (e.g. ethernet cards, chipset/PCH, VRM, GPU, board temps)
+function detect_aux_sensors(): array {
+  $result = [];
+
+  $cpu_chips_exact = ['k10temp','coretemp','zenpower'];
+  $superio_prefixes = ['it8','it86','it87','nct6','nct67','nct68','nuvoton'];
+  $nvme_deny = ['nvme'];
+
+  // CPU-related label keywords to exclude from SuperIO chips
+  $cpu_labels = ['Package id', 'Tctl', 'Tdie', 'CPU Temp', 'PECI Agent', 'CPUTIN', 'Core'];
+
+  foreach (glob('/sys/class/hwmon/hwmon*') as $hwmonPath) {
+    $nameFile = "$hwmonPath/name";
+    if (!is_readable($nameFile)) continue;
+    $chipName = trim(@file_get_contents($nameFile));
+    $chipLower = strtolower($chipName);
+
+    // Skip dedicated CPU chips entirely
+    if (in_array($chipLower, $cpu_chips_exact, true)) continue;
+
+    // Skip NVMe chips (handled by disk/smartctl)
+    foreach ($nvme_deny as $deny) {
+      if (strpos($chipLower, $deny) !== false) continue 2;
+    }
+
+    $isSuperIO = false;
+    foreach ($superio_prefixes as $p) {
+      if (strpos($chipLower, $p) === 0) { $isSuperIO = true; break; }
+    }
+
+    // Collect sensors with labels
+    foreach (glob("$hwmonPath/temp*_label") as $labelFile) {
+      $label = trim(@file_get_contents($labelFile));
+      $input = str_replace('_label', '_input', $labelFile);
+      if (!is_readable($input)) continue;
+
+      $raw = trim(@file_get_contents($input));
+      $c   = is_numeric($raw) ? intval($raw) / 1000 : null;
+      if ($c === null || $c <= 0) continue;
+
+      // For SuperIO chips, skip CPU-related labels (those belong to detect_cpu_sensors)
+      if ($isSuperIO) {
+        $isCpuLabel = false;
+        foreach ($cpu_labels as $cpuKey) {
+          if (stripos($label, $cpuKey) !== false) { $isCpuLabel = true; break; }
+        }
+        if ($isCpuLabel) continue;
+      }
+
+      $idxNum = 999;
+      if (preg_match('#/temp(\d+)_input$#', $input, $m)) $idxNum = (int)$m[1];
+
+      $tempC = round($c, 1) . '°C';
+      $result[] = [
+        'path'  => $input,
+        'label' => "$chipName - $label ($tempC)",
+        'chip'  => $chipName,
+        'idx'   => $idxNum,
+      ];
+    }
+
+    // For chips without labels, include raw temp*_input files
+    if (count(glob("$hwmonPath/temp*_label")) === 0) {
+      foreach (glob("$hwmonPath/temp*_input") as $input) {
+        if (!is_readable($input)) continue;
+        $raw = trim(@file_get_contents($input));
+        $c   = is_numeric($raw) ? intval($raw) / 1000 : null;
+        if ($c === null || $c <= 0) continue;
+
+        $idxNum = 999;
+        if (preg_match('#/temp(\d+)_input$#', $input, $m)) $idxNum = (int)$m[1];
+
+        $tempC = round($c, 1) . '°C';
+        $result[] = [
+          'path'  => $input,
+          'label' => "$chipName - temp" . $idxNum . " ($tempC)",
+          'chip'  => $chipName,
+          'idx'   => $idxNum,
+        ];
+      }
+    }
+  }
+
+  // Append LSI/MegaRAID controller temperatures via storcli (if available)
+  $storcli_bin = find_storcli();
+  if ($storcli_bin !== null) {
+    foreach (detect_storcli_temps($storcli_bin) as $st) {
+      $result[] = $st;
+    }
+  }
+
+  // Append NVIDIA GPU temperatures via nvidia-smi (if available)
+  $nvidia_smi = find_nvidia_smi();
+  if ($nvidia_smi !== null) {
+    foreach (detect_nvidia_temps($nvidia_smi) as $nv) {
+      $result[] = $nv;
+    }
+  }
+
+  // Sort by chip name, then sensor index
+  usort($result, function($a, $b){
+    return strnatcasecmp($a['chip'], $b['chip'])
+        ?: ($a['idx'] <=> $b['idx']);
+  });
+
+  // Group by chip name for optgroup display
+  $grouped = [];
+  foreach ($result as $e) {
+    $grouped[$e['chip']][] = [
+      'path'  => $e['path'],
+      'label' => $e['label'],
+    ];
+  }
+  return $grouped;
 }
 
   // 映射 /dev/nvmeXp1 → pool 名（通过 zpool list -v）
